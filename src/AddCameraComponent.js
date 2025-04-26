@@ -66,21 +66,41 @@ const AddCameraComponent = ({ userId, onCameraAdded }) => {
         // Generate camera ID and publish immediately.
         const newCameraId = generateGUID();
         setCameraId(newCameraId);
-        setMessage("Sending Camera ID...");
+  
+        // Retrieve the local user ID from props/localStorage
+        let localUserId = userId;
+        const storedUser = localStorage.getItem("userData");
+        if (storedUser) {
+          try {
+            const parsedUser = JSON.parse(storedUser);
+            if (parsedUser.userId) {
+              localUserId = parsedUser.userId;
+            }
+          } catch (e) {
+            console.error("Error parsing userData from localStorage:", e);
+          }
+        }
+        
+        // Create payload with both cameraId and userId
+        const payload = JSON.stringify({
+          cameraid: newCameraId,
+          userId: localUserId,
+        });
+        setMessage("Sending Camera ID and User ID...");
         const publishTopic = `webrtc/${cameraSecret}/jsonrpc`;
-        const payload = JSON.stringify({ cameraid: newCameraId });
         mqttClient.publish(publishTopic, payload, (err) => {
           if (err) {
             console.error("Publish error:", err);
-            setMessage("Error sending camera ID");
+            setMessage("Error sending camera ID and user ID");
             setAdding(false);
           } else {
-            setMessage("Camera ID sent. Waiting for initialization confirmation...");
+            setMessage("Camera initialization message sent. Waiting for confirmation...");
           }
         });
       }
     });
   };
+  
 
   // Listen for messages on the subscribed reply topic.
   useEffect(() => {

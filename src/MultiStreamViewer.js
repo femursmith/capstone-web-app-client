@@ -61,12 +61,12 @@ const MultiStreamViewer = () => {
 
   // Otherwise, render the camera list
   return (
-    <div>
-      <br />
-      <br />
+    <div style={{ marginTop: "80px" }}>
+      
+     
       {cameras.map((camera) => (
         <div key={camera.cameraId}>
-          <h3 style={{ display: "flex", justifyContent: "center", width: "100%" }}>
+          <h3 style={{ display: "flex", justifyContent: "center", width: "100%"}}>
             {camera.cameraName}
           </h3>
           <StreamViewer deviceId={camera.cameraId} cameraName={camera.cameraName} />

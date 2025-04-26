@@ -10,9 +10,7 @@ const SettingsPage = () => {
   const cachedUserData = localStorage.getItem("userData");
   const userData = cachedUserData ? JSON.parse(cachedUserData) : {};
 
-  // If userData.cameras is an array of camera names, you can map it directly:
-  // e.g. userData.cameras = ["Hall", "Bedroom", ...]
-  // If your cameras are objects with { cameraName, cameraId }, adjust accordingly.
+  
   const camerasFromStorage = userData.cameras || [];
 
   // Each camera starts as "On" by default (adjust if needed).
@@ -195,6 +193,7 @@ const SettingsPage = () => {
         </div>
       </div>
 
+
       {/* Logout Button */}
       <div
         onClick={handleLogout}
@@ -251,6 +250,7 @@ const SettingsPage = () => {
             >
               &times;
             </button>
+
             <AddCameraComponent onClose={() => setShowAddCamera(false)} />
           </div>
         </div>

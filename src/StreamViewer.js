@@ -3,12 +3,16 @@ import mqtt from "mqtt";
 import playIcon from "./play-button.png";
 import stopIcon from "./stop-button.png";
 import thumbnail from "./thumbnail.jpg";
+import loadingGif from "./loading.gif"; // Import loading.gif
+import styles from './EventGallery.module.css'; // Import CSS module
 
 const StreamViewer = ({ deviceId, cameraName }) => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamUrl, setStreamUrl] = useState(thumbnail);
   const [mqttClient, setMqttClient] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState("waiting");
+  const [isLoading, setIsLoading] = useState(false);
+  const [iceRetryCount, setIceRetryCount] = useState(0); // Retry counter
   const videoStreamRef = useRef(null);
   const imageStreamRef = useRef(null);
   const audioStreamRef = useRef(null);
@@ -16,6 +20,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   const statusRef = useRef("waiting");
   const stopIconRef = useRef(null);
   const mqttClientRef = useRef(null);
+  const iceRetryTimeoutRef = useRef(null); // Ref for timeout
 
   const pcRef = useRef(null);
   const dataChannelRef = useRef(null);
@@ -25,6 +30,16 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   const isPlayingRef = useRef(true);
   const rotateRef = useRef(0);
 
+  // Playback feature states
+  const [mode, setMode] = useState("live"); // 'live' or 'playback'
+  const [playbackDate, setPlaybackDate] = useState("");
+  const [playbackTime, setPlaybackTime] = useState("");
+  const [showLiveButton, setShowLiveButton] = useState(false); // Initially hidden in live mode
+
+  // Retry configuration
+  const MAX_ICE_RETRIES = 3; // Maximum number of retries
+  const ICE_RETRY_DELAY = 5000; // Delay in milliseconds before retry (5 seconds)
+
   // MQTT broker details
   const MQTT_BROKER_URL = "wss://d457c1d9.ala.eu-central-1.emqxsl.com:8084/mqtt";
   const MQTT_USERNAME = "client";
@@ -32,10 +47,16 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   const PUBLISH_TOPIC = `webrtc/${deviceIdRef.current}/jsonrpc`;
   const SUBSCRIBE_TOPIC = `webrtc/${deviceIdRef.current}/jsonrpc-reply`;
 
+
   useEffect(() => {
-    // Update the deviceId ref if the prop changes.
+    // Reset retry counter when deviceId changes
+    setIceRetryCount(0);
+    // ... (MQTT connection and setup - same as before)
     deviceIdRef.current = deviceId;
     statusRef.current = connectionStatus;
+    setIsLoading(false);
+    setMode("live"); // Default to live mode on component mount
+    setShowLiveButton(false); // Hide live button initially
 
     const options = {
       keepalive: 600,
@@ -72,10 +93,11 @@ const StreamViewer = ({ deviceId, cameraName }) => {
           setConnectionStatus("error");
           statusRef.current = "error";
           updateStatusDisplay("error");
+          setIsLoading(false);
         } else {
           console.log(`Subscribed to topic: ${SUBSCRIBE_TOPIC}`);
+          
         }
-        sendOffer();
       });
     });
 
@@ -84,6 +106,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
       setConnectionStatus("error");
       statusRef.current = "error";
       updateStatusDisplay("error");
+      setIsLoading(false);
     });
 
     client.on('message', (topic, message) => {
@@ -95,6 +118,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
       setConnectionStatus("disconnected");
       statusRef.current = "disconnected";
       updateStatusDisplay("disconnected");
+      setIsLoading(false);
     });
 
     return () => {
@@ -103,6 +127,9 @@ const StreamViewer = ({ deviceId, cameraName }) => {
         mqttClientRef.current = null;
       }
       stopWebRTC();
+      if (iceRetryTimeoutRef.current) { // Clear timeout on unmount just in case
+        clearTimeout(iceRetryTimeoutRef.current);
+      }
     };
   }, [deviceId]);
 
@@ -115,6 +142,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   }, [deviceId, cameraName]);
 
   const handleMessage = (message) => {
+    // ... (handleMessage function - same as before)
     try {
       const msg = JSON.parse(message);
       console.log("Received Message for device", deviceIdRef.current, ":", msg);
@@ -130,6 +158,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   };
 
   const startWebRTC = () => {
+    // ... (startWebRTC function - same as before)
     pcRef.current = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
@@ -145,6 +174,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   };
 
   const stopWebRTC = () => {
+    // ... (stopWebRTC function - same as before)
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
@@ -155,8 +185,13 @@ const StreamViewer = ({ deviceId, cameraName }) => {
     }
     setIsStreaming(false);
     setStreamUrl(thumbnail);
-    isPlayingRef.current = false;
+    isPlayingRef.current = true;
     updateStopIcon();
+    setIsLoading(false);
+    setIceRetryCount(0); // Reset retry counter on stop
+    if (iceRetryTimeoutRef.current) {
+        clearTimeout(iceRetryTimeoutRef.current); // Clear any pending retry timeouts
+    }
     console.log("WebRTC Stopped for device:", deviceIdRef.current);
   };
 
@@ -175,9 +210,49 @@ const StreamViewer = ({ deviceId, cameraName }) => {
       setConnectionStatus(pcRef.current.iceConnectionState);
       statusRef.current = pcRef.current.iceConnectionState;
       updateStatusDisplay(pcRef.current.iceConnectionState);
+
+      if (pcRef.current.iceConnectionState === 'connected' || pcRef.current.iceConnectionState === 'completed') {
+        setIsLoading(false);
+        setIceRetryCount(0); // Reset retry counter on success
+        if (iceRetryTimeoutRef.current) {
+            clearTimeout(iceRetryTimeoutRef.current); // Clear any pending retry timeouts
+        }
+      } else if (pcRef.current.iceConnectionState === 'failed' || pcRef.current.iceConnectionState === 'disconnected' || pcRef.current.iceConnectionState === 'closed') {
+        setIsLoading(false); // Stop loading UI, but may retry
+        if (iceRetryTimeoutRef.current) {
+            clearTimeout(iceRetryTimeoutRef.current); // Clear any existing timeout to prevent overlaps
+        }
+
+        if (iceRetryCount < MAX_ICE_RETRIES) {
+          setIceRetryCount(prevCount => prevCount + 1);
+          console.log(`ICE connection failed, retrying in ${ICE_RETRY_DELAY/1000} seconds... (Attempt ${iceRetryCount + 1}/${MAX_ICE_RETRIES})`);
+          setConnectionStatus(`retrying... (${iceRetryCount + 1}/${MAX_ICE_RETRIES})`);
+          statusRef.current = `retrying... (${iceRetryCount + 1}/${MAX_ICE_RETRIES})`;
+          updateStatusDisplay(`retrying... (${iceRetryCount + 1}/${MAX_ICE_RETRIES})`);
+
+          iceRetryTimeoutRef.current = setTimeout(() => {
+            if (pcRef.current && pcRef.current.iceConnectionState !== 'connected' && pcRef.current.iceConnectionState !== 'completed') {
+              console.log("Retrying ICE connection...");
+              sendOffer(); // Retry sending offer
+              if (mode === "live") {
+                  sendLiveModeRequest(); // Resend live mode request
+              } else if (mode === "playback") {
+                  sendPlaybackModeRequest(); // Resend playback mode request
+              }
+              setIsLoading(true); // Show loading again during retry
+            }
+          }, ICE_RETRY_DELAY);
+        } else {
+          console.warn(`Max ICE connection retries reached (${MAX_ICE_RETRIES}). Connection failed.`);
+          setConnectionStatus("failed (max retries)");
+          statusRef.current = "failed (max retries)";
+          updateStatusDisplay("failed (max retries)");
+        }
+      }
     };
 
     pcRef.current.ontrack = event => {
+      // ... (ontrack handler - same as before)
       if (event.track.kind === 'video') {
         handleVideoTrack(event.track);
       } else if (event.track.kind === 'audio') {
@@ -186,6 +261,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
     };
 
     pcRef.current.ondatachannel = event => {
+      // ... (ondatachannel handler - same as before)
       console.log('Data channel received for device:', deviceIdRef.current, event.channel);
       dataChannelRef.current = event.channel;
       setupDataChannelHandlers();
@@ -193,6 +269,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   };
 
   const setupDataChannelHandlers = () => {
+    // ... (setupDataChannelHandlers - same as before)
     if (!dataChannelRef.current) return;
 
     dataChannelRef.current.onopen = () => {
@@ -200,21 +277,25 @@ const StreamViewer = ({ deviceId, cameraName }) => {
       setIsStreaming(true);
       statusRef.current = "streaming";
       updateStatusDisplay("streaming");
-      isPlayingRef.current = true;
+      isPlayingRef.current = false;
       updateStopIcon();
+      setIsLoading(false);
     };
 
     dataChannelRef.current.onclose = () => {
+      // ... (onclose handler - same as before)
       console.log('Data channel closed for device:', deviceIdRef.current);
       setIsStreaming(false);
       setStreamUrl(thumbnail);
       statusRef.current = "waiting";
       updateStatusDisplay("waiting");
-      isPlayingRef.current = false;
+      isPlayingRef.current = true;
       updateStopIcon();
+      setIsLoading(false);
     };
 
     dataChannelRef.current.onmessage = event => {
+      // ... (onmessage handler - same as before)
       if (event.data instanceof ArrayBuffer) {
         const blob = new Blob([event.data], { type: "image/jpeg" });
         const urlCreator = window.URL || window.webkitURL;
@@ -233,6 +314,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   };
 
   const handleVideoTrack = (track) => {
+    // ... (handleVideoTrack - same as before)
     if (videoStreamRef.current) {
       const newStream = new MediaStream();
       newStream.addTrack(track);
@@ -248,6 +330,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   };
 
   const updateStatusDisplay = (status) => {
+    // ... (updateStatusDisplay - same as before)
     const statusElem = document.getElementById(`status-${deviceIdRef.current}`);
     if (statusElem) {
       statusElem.innerHTML = status;
@@ -255,12 +338,13 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   };
 
   const sendOffer = () => {
+    // ... (sendOffer - same as before)
     const client = mqttClientRef.current;
     if (!client || !client.connected) {
       console.warn("MQTT Client not connected for device:", deviceIdRef.current);
       return;
     }
-    
+
     const json = {
       jsonrpc: '2.0',
       method: 'offer',
@@ -268,9 +352,71 @@ const StreamViewer = ({ deviceId, cameraName }) => {
     };
     console.log("Sending Offer for device:", deviceIdRef.current, json);
     client.publish(PUBLISH_TOPIC, JSON.stringify(json), { qos: 2 });
+    setIsLoading(true);
   };
 
+  const sendLiveModeRequest = () => {
+    const client = mqttClientRef.current;
+    if (!client || !client.connected) {
+      console.warn("MQTT Client not connected for device:", deviceIdRef.current);
+      return;
+    }
+    const payload = {"mode":"live"};
+    console.log("Sending Live Mode Request for device:", deviceIdRef.current, payload);
+    client.publish(PUBLISH_TOPIC, JSON.stringify(payload), { qos: 0 });
+    setMode("live");
+    
+  };
+
+  const sendPlaybackModeRequest = () => {
+    const client = mqttClientRef.current;
+    if (!client || !client.connected) {
+      console.warn("MQTT Client not connected for device:", deviceIdRef.current);
+      return;
+    }
+    if (!playbackDate || !playbackTime) {
+        console.warn("Playback date and time must be selected.");
+        // Optionally show a user-friendly message here
+        alert("Please select both a date and a time for playback.");
+        return;
+    }
+
+    // Stop existing stream before changing mode
+    
+
+    // --- Format the time ---
+    let formattedTime = "00-00-00"; // Default/fallback
+    try {
+        const timeParts = playbackTime.split(':'); // Should give ["HH", "MM"] or ["HH", "MM", "SS"]
+        const hh = timeParts[0]?.padStart(2, '0') || '00'; // Add padding for safety
+        const mm = timeParts[1]?.padStart(2, '0') || '00';
+        const ss = timeParts[2]?.padStart(2, '0') || '00'; // Use provided seconds or default to '00'
+        formattedTime = `${hh}-${mm}-${ss}`;
+    } catch (e) {
+        console.error("Error formatting playback time:", playbackTime, e);
+        // Keep the default "00-00-00" or handle error appropriately
+    }
+    // --- End Formatting ---
+
+    const payload = {
+      "mode": "playback",
+      "date": playbackDate, // Assumes YYYY-MM-DD from input type="date"
+      "time": formattedTime // Use the HH-MM-SS formatted time
+    };
+
+    console.log("Sending Playback Mode Request for device:", deviceIdRef.current, payload);
+    client.publish(PUBLISH_TOPIC, JSON.stringify(payload), { qos: 0 }, (err) => {
+        if (err) {
+            console.error("MQTT Publish Error (Playback Mode):", err);
+        } else {
+            setMode("playback");
+        }
+    });
+  };
+
+
   const sendIceCandidate = (candidate) => {
+    // ... (sendIceCandidate - same as before)
     const client = mqttClientRef.current;
     if (!client || !client.connected) {
       console.warn("MQTT Client not connected for device:", deviceIdRef.current);
@@ -287,6 +433,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   };
 
   const sendAnswer = () => {
+    // ... (sendAnswer - same as before)
     const client = mqttClientRef.current;
     if (!client || !client.connected) {
       console.warn("MQTT Client not connected for device:", deviceIdRef.current);
@@ -308,6 +455,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   };
 
   const sendCloseSignal = () => {
+    // ... (sendCloseSignal - same as before)
     const client = mqttClientRef.current;
     if (!client || !client.connected) {
       console.warn("MQTT Client not connected for device:", deviceIdRef.current);
@@ -323,6 +471,7 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   };
 
   const handleOfferResponse = async (offer) => {
+    // ... (handleOfferResponse - same as before)
     console.log("Received Offer for device:", deviceIdRef.current, offer);
     if (!pcRef.current) {
       startWebRTC();
@@ -335,14 +484,17 @@ const StreamViewer = ({ deviceId, cameraName }) => {
       // Answer is sent via onicecandidate event.
     } catch (error) {
       logError("Error handling offer for device:", error);
+      setIsLoading(false);
     }
   };
 
   const handleAnswerResponse = () => {
+    // ... (handleAnswerResponse - same as before)
     console.log('Received Answer OK for device:', deviceIdRef.current);
   };
 
   const handleAudioTrack = (track) => {
+    // ... (handleAudioTrack - same as before)
     if (audioStreamRef.current) {
       const newStream = new MediaStream();
       newStream.addTrack(track);
@@ -353,48 +505,101 @@ const StreamViewer = ({ deviceId, cameraName }) => {
   };
 
   const onStop = () => {
-    if (!isPlayingRef.current) {
-      sendCloseSignal();
-      if (stopIconRef.current) {
-        stopIconRef.current.className = 'fa-solid fa-circle-play';
-      }
-      stopWebRTC();
+    if (isPlayingRef.current) {
+      sendOffer(); // Send offer to start/restart stream
+      isPlayingRef.current = false;
+      updateStopIcon();
     } else {
-      if (stopIconRef.current) {
-        stopIconRef.current.className = 'fa-solid fa-circle-stop';
-      }
-      sendOffer();
+      sendCloseSignal(); // Send close signal to stop stream
+      isPlayingRef.current = true;
+      updateStopIcon();
+      stopWebRTC();
     }
-    updateStopIcon();
   };
 
   const updateStopIcon = () => {
+    // ... (updateStopIcon - same as before)
     if (stopIconRef.current) {
-      stopIconRef.current.className = isPlayingRef.current ? 'fa-solid fa-circle-stop' : 'fa-solid fa-circle-play';
+      stopIconRef.current.src = isPlayingRef.current ? playIcon : stopIcon;
+      stopIconRef.current.alt = isPlayingRef.current ? "Play" : "Stop";
     }
   };
 
-
   const logError = (msg, error) => {
+    // ... (logError - same as before)
     console.error(msg, error);
     setConnectionStatus("error");
     statusRef.current = "error";
     updateStatusDisplay("error");
+    setIsLoading(false);
   };
 
+  const handleLiveButtonClick = () => {
+    sendLiveModeRequest();
+  };
+
+  const handlePlaybackButtonClick = () => {
+    setMode("playback");
+    setShowLiveButton(true); // Show live button when in playback mode
+  };
+
+  const handleDateChange = (event) => {
+    setPlaybackDate(event.target.value);
+  };
+
+  const handleTimeChange = (event) => {
+    setPlaybackTime(event.target.value);
+  };
+
+  const onPlaybackSubmit = (event) => {
+    event.preventDefault(); // Prevent default form submission
+    sendPlaybackModeRequest();
+    // Request new offer after mode switch
+  };
+
+
   return (
-    <div style={{ marginBottom: "20px" }}>
+    <div style={{ marginBottom: "20px" }} className={styles.galleryContainer}>
       <div className="card">
-        <div className="container">
-          <img id={`imgStream-${deviceId}`} ref={imageStreamRef} style={{ width: '100%' }} src={streamUrl} alt="Stream Thumbnail" />
-          <video id={`videoStream-${deviceId}`} ref={videoStreamRef} playsInline style={{ width: '100%', display: 'none' }}></video>
-          <audio id={`audioStream-${deviceId}`} ref={audioStreamRef} style={{ display: 'none' }}></audio>  
-          <p className="top-right" id={`status-${deviceId}`}>{connectionStatus}</p>
+        <div className={`${styles.mediaWrapper} ${styles.container}`} style={{ minHeight: '200px', display: isLoading ? 'flex' : 'block', flexDirection: 'column', justifyContent: 'center', alignItems: 'center'}}>
+          {isLoading && (
+            <>
+              <img src={loadingGif} alt="Loading..." style={{ width: '50px', height: '50px' }} />
+              <p style={{ marginTop: '5px' }} id={`status-${deviceId}`}>{connectionStatus}</p>
+            </>
+          )}
+          {!isLoading && (
+            <>
+              <img id={`imgStream-${deviceId}`} ref={imageStreamRef} className={styles.mediaElement} src={streamUrl} alt="Stream Thumbnail" style={{display: 'block'}} />
+              <video id={`videoStream-${deviceId}`} ref={videoStreamRef} playsInline className={styles.mediaElement} style={{ width: '100%', display: 'none' }}></video>
+              <audio id={`audioStream-${deviceId}`} ref={audioStreamRef} style={{ display: 'none' }}></audio>
+            </>
+          )}
         </div>
-        <div className="btn-group" style={{ width: '100%' }}>
-          <button style={{ width: '25%' }} className="btn" onClick={onStop}>
-            <i id="stop-icon" ref={stopIconRef} className="fa-solid fa-circle-play"></i>
-          </button>
+        <div className="btn-group" style={{ width: '100%', display: 'flex', flexDirection: 'column' }}>
+          <div style={{display: 'flex', flexDirection: 'row', justifyContent: 'space-between'}}>
+            <button style={{ width: '25%' }} className="btn" onClick={onStop}>
+              <img id="stop-icon" ref={stopIconRef} src={isPlayingRef.current ? playIcon : stopIcon} alt={isPlayingRef.current ? "Play" : "Stop"} style={{ width: '20px', height: '20px' }} />
+            </button>
+            
+              <button style={{ width: '25%' }} className="btn" onClick={handleLiveButtonClick}>
+                Live
+              </button>
+            
+          </div>
+
+          {mode === "playback" && (
+            <form onSubmit={onPlaybackSubmit} style={{display:'flex', flexDirection: 'row', justifyContent: 'center', marginTop: '10px'}}>
+              <input type="date" className="btn" value={playbackDate} onChange={handleDateChange} style={{marginRight: '5px'}} required />
+              <input type="time" className="btn" value={playbackTime} onChange={handleTimeChange} required />
+              <button type="submit" className="btn" style={{marginLeft: '5px'}}>Playback</button>
+            </form>
+          )}
+          {mode === "live" && (
+              <button style={{ width: '100%', marginTop: '10px', backgroundColor: '#eee', color: '#333', border: 'none', padding: '10px', cursor: 'pointer', borderRadius: '5px', textAlign: 'center' }} onClick={handlePlaybackButtonClick}>
+                Go to Playback
+              </button>
+          )}
         </div>
       </div>
     </div>

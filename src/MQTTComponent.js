@@ -3,6 +3,7 @@ import mqtt from "mqtt";
 import { useUser } from "./UserContext";
 import NotificationPopup from "./NotificationPopup";
 
+
 const MQTTComponent = ({ onFileDetected }) => {
   const { user } = useUser();
   const [notificationPermission, setNotificationPermission] = useState(Notification.permission);
@@ -71,20 +72,26 @@ const MQTTComponent = ({ onFileDetected }) => {
 
         // Check for expected message shape
         if (msgObj.fileId && msgObj.time) {
+
           if (notificationPermission === "granted") {
             new Notification("Intruder detected", {
               body: `Camera: ${msgObj.cameraName || "Unknown"}\nTime: ${msgObj.time}`,
-              icon: "/notification-icon.png", // Adjust path as needed
+              //icon: "/main_logo.png", // Adjust path as needed
             });
           }
           if (onFileDetected) {
-            onFileDetected({ fileId: msgObj.fileId, time: msgObj.time });
-          }
+            onFileDetected({
+                fileId: msgObj.fileId,
+                time: msgObj.time,
+                event: msgObj.event || "Event", // Provide default if missing
+                cameraName: msgObj.cameraName || "Unknown Camera" // Provide default
+            });
+        }
         } else {
           if (notificationPermission === "granted") {
             new Notification("New MQTT Message", {
               body: msgString,
-              icon: "/notification-icon.png",
+              icon: "/main_logo.png",
             });
           }
         }
